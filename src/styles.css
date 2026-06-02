@@ -149,7 +149,8 @@ body {
 
 #pet.sleeping #body {
   transform: translateY(7px) rotate(-1.5deg);
-  animation: sleep-breathe 3.8s ease-in-out infinite;
+  animation: sleep-breathe 4.2s ease-in-out infinite;
+  transform-origin: 47% 72%;
 }
 
 #pet.sleeping #sprite {
@@ -169,10 +170,10 @@ body {
 @keyframes sleep-breathe {
   0%,
   100% {
-    transform: translateY(7px) rotate(-1.5deg) scaleY(1);
+    transform: translateY(7px) rotate(-1.5deg) scaleX(1) scaleY(1);
   }
   50% {
-    transform: translateY(6px) rotate(-1.5deg) scaleY(1.004);
+    transform: translateY(5px) rotate(-1.5deg) scaleX(1.012) scaleY(1.018);
   }
 }
 
