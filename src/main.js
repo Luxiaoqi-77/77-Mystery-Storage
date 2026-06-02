@@ -9,7 +9,8 @@ const IDLE_RANDOM_ACTION_MS = 1000 * 30;
 const EDGE_WALK_MS = 1000 * 18;
 const EDGE_PEEK_WALK_MS = 1000;
 const AUTONOMOUS_PEEK_REST_MS = 1000 * 60;
-const AUTONOMOUS_POSE_MS = 1000 * 8;
+const AUTONOMOUS_SIT_MS = 1000 * 60;
+const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
@@ -377,10 +378,42 @@ function startAutonomousWalk(direction) {
 
 function startAutonomousPose(state) {
   if (!win || isAnnoyedLocked()) return;
-  autonomousAction = { type: 'pose', state, until: Date.now() + AUTONOMOUS_POSE_MS };
+  const durationMs = state === 'sit' ? AUTONOMOUS_SIT_MS : AUTONOMOUS_SLEEP_MS;
+  autonomousAction = { type: 'pose', state, until: Date.now() + durationMs };
   currentPetState = state;
   hiddenEdge = null;
   win.webContents.send('pet-state', { state, durationMs: 0 });
+}
+
+function getNearestEdgeDirection(bounds, area) {
+  const leftDistance = Math.max(0, bounds.x - area.x);
+  const rightDistance = Math.max(0, area.x + area.width - (bounds.x + bounds.width));
+  return leftDistance <= rightDistance ? 'left' : 'right';
+}
+
+function isNearHorizontalEdge(bounds, area) {
+  const threshold = area.width / 6;
+  const leftDistance = Math.max(0, bounds.x - area.x);
+  const rightDistance = Math.max(0, area.x + area.width - (bounds.x + bounds.width));
+  return Math.min(leftDistance, rightDistance) <= threshold;
+}
+
+function chooseRandomIdleAction(bounds, area) {
+  const nearEdge = isNearHorizontalEdge(bounds, area);
+  const walkChance = nearEdge ? 0.4 : 0.2;
+  const sitChance = nearEdge ? 0.225 : 0.3;
+  const roll = Math.random();
+
+  if (roll < walkChance) {
+    return {
+      type: 'walk',
+      direction: nearEdge
+        ? getNearestEdgeDirection(bounds, area)
+        : Math.random() < 0.5 ? 'left' : 'right'
+    };
+  }
+  if (roll < walkChance + sitChance) return { type: 'sit' };
+  return { type: 'sleep' };
 }
 
 function startRandomIdleAction() {
@@ -388,17 +421,14 @@ function startRandomIdleAction() {
   if (isAnnoyedLocked()) return;
   if (currentPetState !== 'idle') return;
 
-  const actions = ['walk-left', 'walk-right', 'sit', 'sleep'];
-  const action = actions[Math.floor(Math.random() * actions.length)];
-  if (action === 'walk-left') {
-    startAutonomousWalk('left');
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const action = chooseRandomIdleAction(bounds, display.workArea);
+  if (action.type === 'walk') {
+    startAutonomousWalk(action.direction);
     return;
   }
-  if (action === 'walk-right') {
-    startAutonomousWalk('right');
-    return;
-  }
-  startAutonomousPose(action);
+  startAutonomousPose(action.type);
 }
 
 function finishAutonomousPeek(edge) {
