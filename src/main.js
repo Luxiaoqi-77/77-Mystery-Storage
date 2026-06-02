@@ -371,7 +371,8 @@ function startAutonomousWalk(direction) {
   if (!win || isAnnoyedLocked()) return;
   const bounds = win.getBounds();
   const display = screen.getDisplayMatching(bounds);
-  const maxDistance = Math.floor(display.workArea.width / 3);
+  const distanceRatio = Math.random() < 0.6 ? 1 / 10 : 1 / 3;
+  const maxDistance = Math.floor(display.workArea.width * distanceRatio);
   autonomousAction = { type: 'walk', direction, originX: bounds.x, maxDistance };
   sendWalk(direction, 0, { countAsInteraction: false });
 }
