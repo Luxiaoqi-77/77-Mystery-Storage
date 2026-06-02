@@ -5,8 +5,12 @@ const path = require('path');
 
 const PET_SIZE = 260;
 const PEEK_VISIBLE = 161;
+const IDLE_RANDOM_ACTION_MS = 1000 * 30;
 const EDGE_WALK_MS = 1000 * 18;
 const EDGE_PEEK_WALK_MS = 1000;
+const AUTONOMOUS_PEEK_REST_MS = 1000 * 60;
+const AUTONOMOUS_POSE_MS = 1000 * 8;
+const AUTONOMOUS_WALK_STEP = 3;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
 const ANNOYED_LOCK_MS = 5000;
@@ -19,6 +23,7 @@ let dragging = false;
 let dragOffset = { x: 0, y: 0 };
 let lastCursor = null;
 let lastInteractionAt = Date.now();
+let lastPetInteractionAt = Date.now();
 let headShakeScore = 0;
 let lastHeadShakeAxis = null;
 let lastBefuddledAt = 0;
@@ -33,6 +38,8 @@ let annoyedReleaseTimer = null;
 let annoyedLockedUntil = 0;
 let clickBurstStartedAt = 0;
 let clickBurstCount = 0;
+let autonomousAction = null;
+let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
 
 function assetPath(...parts) {
   return path.join(__dirname, '..', ...parts);
@@ -45,6 +52,28 @@ function isAnnoyedLocked() {
 function resetClickChain() {
   clickBurstStartedAt = 0;
   clickBurstCount = 0;
+}
+
+function sendIdleFromMain() {
+  if (!win) return;
+  currentPetState = 'idle';
+  win.webContents.send('pet-state', { state: 'idle', durationMs: 0 });
+}
+
+function scheduleNextIdleAction(delayMs = IDLE_RANDOM_ACTION_MS) {
+  nextIdleActionAt = Date.now() + delayMs;
+}
+
+function cancelAutonomousAction(options = {}) {
+  autonomousAction = null;
+  if (options.clearPeek) hiddenEdge = null;
+  if (options.toIdle) sendIdleFromMain();
+  scheduleNextIdleAction();
+}
+
+function markPetInteraction() {
+  lastPetInteractionAt = Date.now();
+  cancelAutonomousAction({ clearPeek: true });
 }
 
 function createWindow() {
@@ -185,6 +214,7 @@ function sendState(state, durationMs, options = {}) {
   if (!win) return;
   if (isAnnoyedLocked() && state !== 'idle') return;
   currentPetState = state;
+  if (options.countAsInteraction !== false) markPetInteraction();
   lastInteractionAt = Date.now();
   hiddenEdge = null;
   if (state !== 'click_annoyed') {
@@ -196,6 +226,12 @@ function sendState(state, durationMs, options = {}) {
     }
   }
   win.webContents.send('pet-state', { state, durationMs, startGaze: Boolean(options.startGaze) });
+  if (durationMs > 0) {
+    const stateAtStart = state;
+    setTimeout(() => {
+      if (currentPetState === stateAtStart) currentPetState = 'idle';
+    }, durationMs);
+  }
 }
 
 function scheduleAnnoyedRelease() {
@@ -270,12 +306,13 @@ function sendBefuddledThenSit(durationMs) {
   }, durationMs);
 }
 
-function sendWalk(direction, durationMs) {
+function sendWalk(direction, durationMs, options = {}) {
   if (!win) return;
   if (isAnnoyedLocked()) return;
   currentPetState = 'walk';
+  if (options.countAsInteraction !== false) markPetInteraction();
   lastInteractionAt = Date.now();
-  hiddenEdge = null;
+  if (options.clearPeek !== false) hiddenEdge = null;
   win.webContents.send('pet-state', { state: 'walk', direction, durationMs });
 }
 
@@ -329,9 +366,114 @@ function finishEdgePeekWalk(area) {
   sendPeek(direction);
 }
 
+function startAutonomousWalk(direction) {
+  if (!win || isAnnoyedLocked()) return;
+  autonomousAction = { type: 'walk', direction };
+  sendWalk(direction, 0, { countAsInteraction: false });
+}
+
+function startAutonomousPose(state) {
+  if (!win || isAnnoyedLocked()) return;
+  autonomousAction = { type: 'pose', state, until: Date.now() + AUTONOMOUS_POSE_MS };
+  currentPetState = state;
+  hiddenEdge = null;
+  win.webContents.send('pet-state', { state, durationMs: 0 });
+}
+
+function startRandomIdleAction() {
+  if (!win || dragging || hiddenEdge || edgePeekWalk || autonomousAction) return;
+  if (isAnnoyedLocked()) return;
+  if (currentPetState !== 'idle') return;
+
+  const actions = ['walk-left', 'walk-right', 'sit', 'sleep'];
+  const action = actions[Math.floor(Math.random() * actions.length)];
+  if (action === 'walk-left') {
+    startAutonomousWalk('left');
+    return;
+  }
+  if (action === 'walk-right') {
+    startAutonomousWalk('right');
+    return;
+  }
+  startAutonomousPose(action);
+}
+
+function finishAutonomousPeek(edge) {
+  const direction = edge === 'left' ? 'right' : 'left';
+  autonomousAction = { type: 'leave-peek', direction };
+  sendWalk(direction, 0, { countAsInteraction: false, clearPeek: false });
+}
+
+function updateAutonomousAction(now) {
+  if (!win || dragging || isAnnoyedLocked()) return;
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const area = display.workArea;
+
+  if (!autonomousAction) {
+    if (now - lastPetInteractionAt >= IDLE_RANDOM_ACTION_MS && now >= nextIdleActionAt) {
+      startRandomIdleAction();
+    }
+    return;
+  }
+
+  if (autonomousAction.type === 'pose') {
+    if (now >= autonomousAction.until) {
+      cancelAutonomousAction({ toIdle: true });
+    }
+    return;
+  }
+
+  if (autonomousAction.type === 'peek-rest') {
+    if (now >= autonomousAction.until) finishAutonomousPeek(autonomousAction.edge);
+    return;
+  }
+
+  const direction = autonomousAction.direction;
+  const dx = direction === 'left' ? -AUTONOMOUS_WALK_STEP : AUTONOMOUS_WALK_STEP;
+  const next = { ...bounds, x: bounds.x + dx };
+
+  if (autonomousAction.type === 'walk') {
+    const reachesLeft = next.x <= area.x - PET_SIZE + PEEK_VISIBLE;
+    const reachesRight = next.x + PET_SIZE >= area.x + area.width + PET_SIZE - PEEK_VISIBLE;
+    if (direction === 'left' && reachesLeft) {
+      next.x = area.x - PET_SIZE + PEEK_VISIBLE;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      hiddenEdge = 'left';
+      autonomousAction = { type: 'peek-rest', edge: 'left', until: now + AUTONOMOUS_PEEK_REST_MS };
+      sendPeek('left');
+      return;
+    }
+    if (direction === 'right' && reachesRight) {
+      next.x = area.x + area.width - PEEK_VISIBLE;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      hiddenEdge = 'right';
+      autonomousAction = { type: 'peek-rest', edge: 'right', until: now + AUTONOMOUS_PEEK_REST_MS };
+      sendPeek('right');
+      return;
+    }
+    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+    return;
+  }
+
+  if (autonomousAction.type === 'leave-peek') {
+    const fullyInsideLeft = direction === 'right' && next.x >= area.x + 12;
+    const fullyInsideRight = direction === 'left' && next.x + PET_SIZE <= area.x + area.width - 12;
+    if (fullyInsideLeft || fullyInsideRight) {
+      next.x = direction === 'right' ? area.x + 12 : area.x + area.width - PET_SIZE - 12;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      hiddenEdge = null;
+      cancelAutonomousAction({ toIdle: true });
+      return;
+    }
+    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+  }
+}
+
 function maybeEdgeWalk() {
   if (!win || dragging) return;
   if (isAnnoyedLocked()) return;
+  if (autonomousAction) return;
   const now = Date.now();
   const bounds = win.getBounds();
   const display = screen.getDisplayMatching(bounds);
@@ -402,6 +544,9 @@ function sampleMouse() {
     return;
   }
 
+  updateAutonomousAction(now);
+  if (autonomousAction) return;
+
   if (headShakeScore >= HEAD_SHAKE_TRIGGER_SCORE && !hiddenEdge && !edgePeekWalk) {
     triggerBefuddledThenSit();
   }
@@ -451,6 +596,7 @@ ipcMain.on('pet-drag-end', (_event, data = {}) => {
 ipcMain.on('pet-lifted', () => {
   if (isAnnoyedLocked()) return;
   if (!dragging) return;
+  markPetInteraction();
   lastInteractionAt = Date.now();
   hiddenEdge = null;
   edgePeekWalk = null;
@@ -486,6 +632,7 @@ ipcMain.on('pet-click', (_event, data) => {
 
 ipcMain.on('show-context-menu', () => {
   if (isAnnoyedLocked()) return;
+  markPetInteraction();
   if (win) buildMenu().popup({ window: win });
 });
 
