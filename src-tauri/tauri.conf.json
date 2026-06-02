@@ -9,6 +9,7 @@
     "beforeBuildCommand": "npm run tauri:prepare"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",

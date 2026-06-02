@@ -5,10 +5,11 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win portable",
+    "electron:build": "electron-builder --win portable",
     "tauri:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"New-Item -ItemType Directory -Force -Path src/assets | Out-Null; Copy-Item -Path assets/pet -Destination src/assets -Recurse -Force\"",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "build": "tauri build"
   },
   "author": "",
   "license": "MIT",

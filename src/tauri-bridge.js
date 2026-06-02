@@ -1,4 +1,8 @@
 (() => {
+  if (!window.__TAURI__?.core || !window.__TAURI__?.event) {
+    console.error('Tauri API is not available. Check build.withGlobalTauri in src-tauri/tauri.conf.json.');
+    return;
+  }
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
