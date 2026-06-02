@@ -112,6 +112,7 @@ let dragStarted = false;
 let movedDuringDrag = false;
 let wasLongPress = false;
 let dragEndStartsGaze = true;
+let pointerDownPoint = null;
 let liftedShakeScore = 0;
 let liftedShakeAxis = null;
 let lastDragPoint = null;
@@ -290,6 +291,7 @@ function resetPointerInteraction() {
   dragStarted = false;
   movedDuringDrag = false;
   wasLongPress = false;
+  pointerDownPoint = null;
   pet.classList.remove('dragging');
   pet.classList.remove('clicked');
   if (holdTimer) {
@@ -571,17 +573,12 @@ pet.addEventListener('mousedown', (event) => {
   dragStarted = false;
   movedDuringDrag = false;
   wasLongPress = false;
+  pointerDownPoint = { x: event.screenX, y: event.screenY };
   dragEndStartsGaze = true;
 
   const startedInPeek = currentState === 'peek';
   const startedInSit = currentState === 'sit';
   const startedInCling = currentState === 'cling_top';
-  if (!startedInPeek && !startedInSit && !startedInCling) {
-    dragStarted = true;
-    pet.classList.add('dragging');
-    window.petApi.dragStart({ x: event.screenX, y: event.screenY });
-  }
-
   holdTimer = setTimeout(() => {
     if (!dragging) return;
     wasLongPress = true;
@@ -601,6 +598,15 @@ window.addEventListener('mousemove', (event) => {
   updateClingHitTest(event);
   if (isInteractionLocked()) return;
   if (!dragging) return;
+  if (!dragStarted && pointerDownPoint) {
+    const dx = event.screenX - pointerDownPoint.x;
+    const dy = event.screenY - pointerDownPoint.y;
+    if (Math.hypot(dx, dy) > 6) {
+      dragStarted = true;
+      pet.classList.add('dragging');
+      window.petApi.dragStart({ x: pointerDownPoint.x, y: pointerDownPoint.y });
+    }
+  }
   if (!dragStarted) return;
   movedDuringDrag = true;
   trackLiftedShake({ x: event.screenX, y: event.screenY });
@@ -629,6 +635,7 @@ window.addEventListener('mouseup', (event) => {
     });
   }
   dragStarted = false;
+  pointerDownPoint = null;
   dragEndStartsGaze = true;
   resetLiftedShake();
 });

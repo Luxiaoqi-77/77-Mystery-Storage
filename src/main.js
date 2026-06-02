@@ -44,6 +44,7 @@ let annoyedReleaseTimer = null;
 let annoyedLockedUntil = 0;
 let clickBurstStartedAt = 0;
 let clickBurstCount = 0;
+let lastClickAt = 0;
 let autonomousAction = null;
 let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
 let attachedWindow = null;
@@ -1017,6 +1018,7 @@ ipcMain.on('pet-drag-end', (_event, data = {}) => {
 ipcMain.on('pet-lifted', () => {
   if (isAnnoyedLocked()) return;
   if (!dragging) return;
+  if (Date.now() - lastClickAt < 280) return;
   markPetInteraction();
   lastInteractionAt = Date.now();
   hiddenEdge = null;
@@ -1032,6 +1034,7 @@ ipcMain.on('pet-wake-idle', (_event, data = {}) => {
 
 ipcMain.on('pet-click', (_event, data) => {
   if (isAnnoyedLocked()) return;
+  lastClickAt = Date.now();
   lastInteractionAt = Date.now();
   hiddenEdge = null;
 
