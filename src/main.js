@@ -15,7 +15,7 @@ const AUTONOMOUS_SIT_MS = 1000 * 60;
 const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
 const CLING_ATTACH_THRESHOLD = 52;
-const CLING_OVERLAP = 48;
+const CLING_OVERLAP = 42;
 const CLING_POLL_MS = 24;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
@@ -50,6 +50,9 @@ let attachedWindow = null;
 let lastClingPollAt = 0;
 let clingTracker = null;
 let clingTrackerBuffer = '';
+let cachedVisibleWindows = [];
+let windowListTracker = null;
+let windowListTrackerBuffer = '';
 let petMousePassthrough = false;
 let normalAlwaysOnTop = true;
 
@@ -193,6 +196,73 @@ $items | ConvertTo-Json -Compress
   return Array.isArray(result) ? result : [result];
 }
 
+function stopWindowListTracker() {
+  if (windowListTracker) {
+    windowListTracker.removeAllListeners();
+    windowListTracker.kill();
+    windowListTracker = null;
+  }
+  windowListTrackerBuffer = '';
+}
+
+function handleWindowListLine(line) {
+  if (!line.trim()) return;
+  try {
+    const parsed = JSON.parse(line);
+    cachedVisibleWindows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+  } catch {
+    cachedVisibleWindows = [];
+  }
+}
+
+function startWindowListTracker() {
+  if (process.platform !== 'win32' || windowListTracker) return;
+  const script = `${getWindowApiScript()}
+while ($true) {
+  $items = New-Object System.Collections.ArrayList
+  [WinPetApi]::EnumWindows({
+    param([IntPtr]$hWnd, [IntPtr]$lParam)
+    if (-not [WinPetApi]::IsWindowVisible($hWnd)) { return $true }
+    if ([WinPetApi]::GetWindowTextLength($hWnd) -le 0) { return $true }
+    [uint32]$processId = 0
+    [WinPetApi]::GetWindowThreadProcessId($hWnd, [ref]$processId) | Out-Null
+    if ($processId -eq ${process.pid}) { return $true }
+    $rect = New-Object RECT
+    if (-not [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    if ($width -lt 180 -or $height -lt 120) { return $true }
+    [void]$items.Add([pscustomobject]@{
+      hwnd = $hWnd.ToInt64()
+      left = $rect.Left
+      top = $rect.Top
+      right = $rect.Right
+      bottom = $rect.Bottom
+      width = $width
+      height = $height
+      topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
+    })
+    return $true
+  }, [IntPtr]::Zero) | Out-Null
+  $items | ConvertTo-Json -Compress
+  Start-Sleep -Milliseconds 220
+}
+`;
+  windowListTracker = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+  windowListTracker.stdout.on('data', (chunk) => {
+    windowListTrackerBuffer += chunk.toString('utf8');
+    const lines = windowListTrackerBuffer.split(/\r?\n/);
+    windowListTrackerBuffer = lines.pop() || '';
+    lines.forEach(handleWindowListLine);
+  });
+  windowListTracker.on('exit', () => {
+    windowListTracker = null;
+  });
+}
+
 function getWindowRectByHandle(hwnd) {
   const script = `${getWindowApiScript()}
 $hWnd = [IntPtr]${Number(hwnd)}
@@ -218,8 +288,9 @@ function findTopAttachTarget(bounds, point) {
   const petRight = bounds.x + bounds.width;
   const petBottom = bounds.y + bounds.height;
   const centerX = bounds.x + bounds.width / 2;
+  const candidates = cachedVisibleWindows.length ? cachedVisibleWindows : getVisibleWindows();
 
-  return getVisibleWindows()
+  return candidates
     .map((candidate) => {
       const overlap = Math.min(petRight, candidate.right) - Math.max(petLeft, candidate.left);
       const topDistance = Math.abs(petBottom - candidate.top);
@@ -242,8 +313,11 @@ function findTopAttachTarget(bounds, point) {
 
 function setAttachedWindowBounds(rect) {
   if (!win) return;
-  const current = win.getBounds();
-  const x = Math.round(Math.min(Math.max(current.x, rect.left - PET_SIZE + 42), rect.right - 42));
+  const fallbackOffsetX = Math.round((rect.width - PET_SIZE) / 2);
+  const offsetX = attachedWindow?.offsetX ?? fallbackOffsetX;
+  const minOffsetX = -PET_SIZE + 42;
+  const maxOffsetX = rect.width - 42;
+  const x = Math.round(rect.left + Math.min(Math.max(offsetX, minOffsetX), maxOffsetX));
   const y = Math.round(rect.top - PET_SIZE + CLING_OVERLAP);
   win.setBounds({ x, y, width: PET_SIZE, height: PET_SIZE });
   win.setAlwaysOnTop(Boolean(rect.topmost), 'screen-saver');
@@ -322,7 +396,8 @@ while ($true) {
 
 function attachToWindow(rect) {
   if (!win || isAnnoyedLocked()) return false;
-  attachedWindow = { hwnd: rect.hwnd };
+  const bounds = win.getBounds();
+  attachedWindow = { hwnd: rect.hwnd, offsetX: Math.round(bounds.x - rect.left) };
   hiddenEdge = null;
   edgePeekWalk = null;
   autonomousAction = null;
@@ -995,6 +1070,7 @@ app.whenReady().then(() => {
   setAutostart(autostartEnabled);
   createWindow();
   createTray();
+  startWindowListTracker();
   setInterval(sampleMouse, MOUSE_SAMPLE_MS);
 });
 
@@ -1004,4 +1080,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopClingTracker();
+  stopWindowListTracker();
 });

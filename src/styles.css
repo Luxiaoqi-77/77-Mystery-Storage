@@ -189,10 +189,10 @@ body {
 @keyframes cling-breathe {
   0%,
   100% {
-    transform: translateY(12px) scale(0.84);
+    transform: translateY(8px) scale(0.78);
   }
   50% {
-    transform: translateY(10px) scale(0.846);
+    transform: translateY(6px) scale(0.786);
   }
 }
 
