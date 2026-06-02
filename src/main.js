@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, screen, nativeImage } = require('electron');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,8 +15,8 @@ const AUTONOMOUS_SIT_MS = 1000 * 60;
 const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
 const CLING_ATTACH_THRESHOLD = 52;
-const CLING_OVERLAP = 54;
-const CLING_POLL_MS = 70;
+const CLING_OVERLAP = 48;
+const CLING_POLL_MS = 24;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
 const ANNOYED_LOCK_MS = 5000;
@@ -48,6 +48,8 @@ let autonomousAction = null;
 let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
 let attachedWindow = null;
 let lastClingPollAt = 0;
+let clingTracker = null;
+let clingTrackerBuffer = '';
 let petMousePassthrough = false;
 let normalAlwaysOnTop = true;
 
@@ -101,6 +103,20 @@ function runWindowQuery(script, timeout = 900) {
   }
 }
 
+function runPowerShell(script, timeout = 900) {
+  if (process.platform !== 'win32') return false;
+  try {
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout, windowsHide: true }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function getWindowApiScript() {
   return `
 Add-Type @"
@@ -114,10 +130,33 @@ public class WinPetApi {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll")] public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 }
 public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 "@
 `;
+}
+
+function getPetNativeHandleInt() {
+  if (!win) return 0;
+  const handle = win.getNativeWindowHandle();
+  return Number(handle.readBigUInt64LE(0));
+}
+
+function setPetOwnerWindow(ownerHwnd) {
+  const petHwnd = getPetNativeHandleInt();
+  if (!petHwnd || process.platform !== 'win32') return;
+  const owner = ownerHwnd ? Number(ownerHwnd) : 0;
+  const script = `${getWindowApiScript()}
+$pet = [IntPtr]${petHwnd}
+$owner = [IntPtr]${owner}
+[WinPetApi]::SetWindowLongPtr($pet, -8, $owner) | Out-Null
+if ($owner -ne [IntPtr]::Zero) {
+  [WinPetApi]::SetWindowPos($pet, $owner, 0, 0, 0, 0, 0x0013) | Out-Null
+}
+`;
+  runPowerShell(script, 700);
 }
 
 function getVisibleWindows() {
@@ -216,6 +255,71 @@ function setPetMousePassthrough(enabled) {
   win.setIgnoreMouseEvents(enabled, { forward: true });
 }
 
+function stopClingTracker() {
+  if (clingTracker) {
+    clingTracker.removeAllListeners();
+    clingTracker.kill();
+    clingTracker = null;
+  }
+  clingTrackerBuffer = '';
+}
+
+function handleClingTrackerLine(line) {
+  if (!attachedWindow || !line.trim()) return;
+  let rect;
+  try {
+    rect = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (!rect.visible || rect.width < 180 || rect.height < 80) {
+    detachFromWindow({ toIdle: true });
+    return;
+  }
+  setAttachedWindowBounds(rect);
+}
+
+function startClingTracker(hwnd) {
+  stopClingTracker();
+  if (process.platform !== 'win32') return;
+  const script = `${getWindowApiScript()}
+$hWnd = [IntPtr]${Number(hwnd)}
+while ($true) {
+  $rect = New-Object RECT
+  $visible = [WinPetApi]::IsWindowVisible($hWnd)
+  if ($visible -and [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) {
+    [pscustomobject]@{
+      hwnd = $hWnd.ToInt64()
+      left = $rect.Left
+      top = $rect.Top
+      right = $rect.Right
+      bottom = $rect.Bottom
+      width = $rect.Right - $rect.Left
+      height = $rect.Bottom - $rect.Top
+      topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
+      visible = $true
+    } | ConvertTo-Json -Compress
+  } else {
+    [pscustomobject]@{ visible = $false } | ConvertTo-Json -Compress
+  }
+  Start-Sleep -Milliseconds ${CLING_POLL_MS}
+}
+`;
+  clingTracker = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+  clingTracker.stdout.on('data', (chunk) => {
+    clingTrackerBuffer += chunk.toString('utf8');
+    const lines = clingTrackerBuffer.split(/\r?\n/);
+    clingTrackerBuffer = lines.pop() || '';
+    lines.forEach(handleClingTrackerLine);
+  });
+  clingTracker.on('exit', () => {
+    clingTracker = null;
+  });
+}
+
 function attachToWindow(rect) {
   if (!win || isAnnoyedLocked()) return false;
   attachedWindow = { hwnd: rect.hwnd };
@@ -226,7 +330,9 @@ function attachToWindow(rect) {
   lastClingPollAt = Date.now();
   setPetMousePassthrough(false);
   win.setFocusable(false);
+  setPetOwnerWindow(rect.hwnd);
   setAttachedWindowBounds(rect);
+  startClingTracker(rect.hwnd);
   win.webContents.send('pet-state', { state: 'cling_top', durationMs: 0 });
   scheduleNextIdleAction();
   return true;
@@ -236,6 +342,8 @@ function detachFromWindow(options = {}) {
   if (!attachedWindow) return;
   attachedWindow = null;
   lastClingPollAt = 0;
+  stopClingTracker();
+  setPetOwnerWindow(0);
   setPetMousePassthrough(false);
   win.setFocusable(true);
   win.setAlwaysOnTop(normalAlwaysOnTop, 'screen-saver');
@@ -245,6 +353,7 @@ function detachFromWindow(options = {}) {
 
 function updateAttachedWindow(now) {
   if (!attachedWindow || !win) return false;
+  if (clingTracker) return true;
   if (now - lastClingPollAt < CLING_POLL_MS) return true;
   lastClingPollAt = now;
   const rect = getWindowRectByHandle(attachedWindow.hwnd);
@@ -891,4 +1000,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   // Keep the tray/menu process alive unless the user chooses Exit.
+});
+
+app.on('before-quit', () => {
+  stopClingTracker();
 });
