@@ -153,7 +153,7 @@ body {
 
 #pet.clinging #body {
   animation: cling-breathe 3.6s ease-in-out infinite;
-  transform-origin: 50% 78%;
+  transform-origin: 47% 74%;
 }
 
 #pet.sleeping #body {
@@ -189,10 +189,10 @@ body {
 @keyframes cling-breathe {
   0%,
   100% {
-    transform: translateY(0) scale(1);
+    transform: translateY(16px) scale(0.9);
   }
   50% {
-    transform: translateY(-1px) scale(1.006);
+    transform: translateY(14px) scale(0.906);
   }
 }
 

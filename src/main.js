@@ -15,8 +15,8 @@ const AUTONOMOUS_SIT_MS = 1000 * 60;
 const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
 const CLING_ATTACH_THRESHOLD = 52;
-const CLING_OVERLAP = 34;
-const CLING_POLL_MS = 280;
+const CLING_OVERLAP = 54;
+const CLING_POLL_MS = 70;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
 const ANNOYED_LOCK_MS = 5000;
@@ -48,6 +48,8 @@ let autonomousAction = null;
 let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
 let attachedWindow = null;
 let lastClingPollAt = 0;
+let petMousePassthrough = false;
+let normalAlwaysOnTop = true;
 
 function assetPath(...parts) {
   return path.join(__dirname, '..', ...parts);
@@ -111,6 +113,7 @@ public class WinPetApi {
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 }
 public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 "@
@@ -124,9 +127,9 @@ $items = New-Object System.Collections.ArrayList
   param([IntPtr]$hWnd, [IntPtr]$lParam)
   if (-not [WinPetApi]::IsWindowVisible($hWnd)) { return $true }
   if ([WinPetApi]::GetWindowTextLength($hWnd) -le 0) { return $true }
-  [uint32]$pid = 0
-  [WinPetApi]::GetWindowThreadProcessId($hWnd, [ref]$pid) | Out-Null
-  if ($pid -eq ${process.pid}) { return $true }
+  [uint32]$processId = 0
+  [WinPetApi]::GetWindowThreadProcessId($hWnd, [ref]$processId) | Out-Null
+  if ($processId -eq ${process.pid}) { return $true }
   $rect = New-Object RECT
   if (-not [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
   $width = $rect.Right - $rect.Left
@@ -140,6 +143,7 @@ $items = New-Object System.Collections.ArrayList
     bottom = $rect.Bottom
     width = $width
     height = $height
+    topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
   })
   return $true
 }, [IntPtr]::Zero) | Out-Null
@@ -163,6 +167,7 @@ if (([WinPetApi]::IsWindowVisible($hWnd)) -and ([WinPetApi]::GetWindowRect($hWnd
     bottom = $rect.Bottom
     width = $rect.Right - $rect.Left
     height = $rect.Bottom - $rect.Top
+    topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
   } | ConvertTo-Json -Compress
 }
 `;
@@ -202,6 +207,13 @@ function setAttachedWindowBounds(rect) {
   const x = Math.round(Math.min(Math.max(current.x, rect.left - PET_SIZE + 42), rect.right - 42));
   const y = Math.round(rect.top - PET_SIZE + CLING_OVERLAP);
   win.setBounds({ x, y, width: PET_SIZE, height: PET_SIZE });
+  win.setAlwaysOnTop(Boolean(rect.topmost), 'screen-saver');
+}
+
+function setPetMousePassthrough(enabled) {
+  if (!win || petMousePassthrough === enabled) return;
+  petMousePassthrough = enabled;
+  win.setIgnoreMouseEvents(enabled, { forward: true });
 }
 
 function attachToWindow(rect) {
@@ -212,6 +224,8 @@ function attachToWindow(rect) {
   autonomousAction = null;
   currentPetState = 'cling_top';
   lastClingPollAt = Date.now();
+  setPetMousePassthrough(false);
+  win.setFocusable(false);
   setAttachedWindowBounds(rect);
   win.webContents.send('pet-state', { state: 'cling_top', durationMs: 0 });
   scheduleNextIdleAction();
@@ -222,6 +236,9 @@ function detachFromWindow(options = {}) {
   if (!attachedWindow) return;
   attachedWindow = null;
   lastClingPollAt = 0;
+  setPetMousePassthrough(false);
+  win.setFocusable(true);
+  win.setAlwaysOnTop(normalAlwaysOnTop, 'screen-saver');
   if (options.toIdle) sendIdleFromMain();
   scheduleNextIdleAction();
 }
@@ -305,7 +322,8 @@ function buildMenu() {
       type: 'checkbox',
       checked: true,
       click: (item) => {
-        if (win) win.setAlwaysOnTop(item.checked, 'screen-saver');
+        normalAlwaysOnTop = item.checked;
+        if (win && !attachedWindow) win.setAlwaysOnTop(item.checked, 'screen-saver');
       }
     },
     { type: 'separator' },
@@ -853,6 +871,14 @@ ipcMain.on('show-context-menu', () => {
   if (isAnnoyedLocked()) return;
   markPetInteraction();
   if (win) buildMenu().popup({ window: win });
+});
+
+ipcMain.on('pet-cling-hit-test', (_event, interactive) => {
+  if (!attachedWindow) {
+    setPetMousePassthrough(false);
+    return;
+  }
+  setPetMousePassthrough(!interactive);
 });
 
 app.whenReady().then(() => {

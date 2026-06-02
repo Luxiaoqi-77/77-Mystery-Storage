@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('petApi', {
   dragEnd: (data) => ipcRenderer.send('pet-drag-end', data),
   lifted: () => ipcRenderer.send('pet-lifted'),
   click: (data) => ipcRenderer.send('pet-click', data),
+  clingHitTest: (interactive) => ipcRenderer.send('pet-cling-hit-test', interactive),
   wakeIdle: (data) => ipcRenderer.send('pet-wake-idle', data),
   contextMenu: () => ipcRenderer.send('show-context-menu'),
   onState: (callback) => ipcRenderer.on('pet-state', (_event, payload) => callback(payload)),
