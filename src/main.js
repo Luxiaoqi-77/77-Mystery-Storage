@@ -368,7 +368,10 @@ function finishEdgePeekWalk(area) {
 
 function startAutonomousWalk(direction) {
   if (!win || isAnnoyedLocked()) return;
-  autonomousAction = { type: 'walk', direction };
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const maxDistance = Math.floor(display.workArea.width / 3);
+  autonomousAction = { type: 'walk', direction, originX: bounds.x, maxDistance };
   sendWalk(direction, 0, { countAsInteraction: false });
 }
 
@@ -436,6 +439,7 @@ function updateAutonomousAction(now) {
   if (autonomousAction.type === 'walk') {
     const reachesLeft = next.x <= area.x - PET_SIZE + PEEK_VISIBLE;
     const reachesRight = next.x + PET_SIZE >= area.x + area.width + PET_SIZE - PEEK_VISIBLE;
+    const walkedDistance = Math.abs(next.x - autonomousAction.originX);
     if (direction === 'left' && reachesLeft) {
       next.x = area.x - PET_SIZE + PEEK_VISIBLE;
       win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
@@ -450,6 +454,15 @@ function updateAutonomousAction(now) {
       hiddenEdge = 'right';
       autonomousAction = { type: 'peek-rest', edge: 'right', until: now + AUTONOMOUS_PEEK_REST_MS };
       sendPeek('right');
+      return;
+    }
+    if (walkedDistance >= autonomousAction.maxDistance) {
+      const limitedX = autonomousAction.originX + (direction === 'left' ? -autonomousAction.maxDistance : autonomousAction.maxDistance);
+      const minX = area.x + 12;
+      const maxX = area.x + area.width - PET_SIZE - 12;
+      next.x = Math.min(Math.max(limitedX, minX), maxX);
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      cancelAutonomousAction({ toIdle: true });
       return;
     }
     win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
