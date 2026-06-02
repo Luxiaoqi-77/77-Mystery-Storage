@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -19,7 +23,7 @@ const AUTONOMOUS_PEEK_REST_MS: u64 = 60_000;
 const AUTONOMOUS_SIT_MS: u64 = 60_000;
 const AUTONOMOUS_SLEEP_MS: u64 = 120_000;
 const AUTONOMOUS_WALK_STEP: i32 = 3;
-const MOUSE_SAMPLE_MS: u64 = 24;
+const MOUSE_SAMPLE_MS: u64 = 120;
 const CLING_ATTACH_THRESHOLD: i32 = 52;
 const CLING_OVERLAP: i32 = 42;
 const ANNOYED_LOCK_MS: u64 = 5_000;
@@ -865,6 +869,48 @@ fn sample_loop(app: AppHandle) {
     });
 }
 
+fn recall_pet(app: &AppHandle) {
+    let Some(window) = main_window(app) else {
+        return;
+    };
+    let cursor = cursor_point();
+    let monitor = window.current_monitor().ok().flatten();
+    let (area_x, area_y, area_width, area_height) = monitor
+        .as_ref()
+        .map(|m| (m.position().x, m.position().y, m.size().width as i32, m.size().height as i32))
+        .unwrap_or((0, 0, 1920, 1080));
+    let x = (cursor.x - PET_SIZE / 2).clamp(area_x + 12, area_x + area_width - PET_SIZE - 12);
+    let y = (cursor.y - PET_SIZE / 2).clamp(area_y + 12, area_y + area_height - PET_SIZE - 12);
+    set_window_position(&window, x, y);
+    let state_ref = app.state::<AppState>();
+    let mut state = state_ref.0.lock().unwrap();
+    detach_from_window(app, &mut state, false);
+    send_state(app, &mut state, "idle", 0, None);
+}
+
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    let handle = app.handle();
+    let show_item = MenuItem::with_id(handle, "show", "显示/召回", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(handle, "exit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(handle, &[&show_item, &exit_item])?;
+    let Some(icon) = app.default_window_icon().cloned() else {
+        return Ok(());
+    };
+
+    TrayIconBuilder::new()
+        .tooltip("桌宠")
+        .icon(icon)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => recall_pet(app),
+            "exit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
 async fn tokio_sleep() {
     tokio::time::sleep(Duration::from_millis(MOUSE_SAMPLE_MS)).await;
 }
@@ -898,6 +944,7 @@ pub fn run() {
                 );
             }
             let _ = window.show();
+            create_tray(app)?;
             sample_loop(app.handle().clone());
             Ok(())
         })

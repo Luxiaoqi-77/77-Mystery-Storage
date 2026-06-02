@@ -1,10 +1,22 @@
 (() => {
-  if (!window.__TAURI__?.core || !window.__TAURI__?.event) {
-    console.error('Tauri API is not available. Check build.withGlobalTauri in src-tauri/tauri.conf.json.');
-    return;
-  }
-  const { invoke } = window.__TAURI__.core;
-  const { listen } = window.__TAURI__.event;
+  const coreInvoke = window.__TAURI__?.core?.invoke;
+  const eventListen = window.__TAURI__?.event?.listen;
+  const internalInvoke = window.__TAURI_INTERNALS__?.invoke;
+  const internalListen = window.__TAURI_INTERNALS__?.listen;
+
+  const invoke = (command, args = {}) => {
+    if (coreInvoke) return coreInvoke(command, args);
+    if (internalInvoke) return internalInvoke(command, args);
+    console.error('Tauri invoke API is not available:', command);
+    return Promise.reject(new Error('Tauri invoke API is not available'));
+  };
+
+  const listen = (event, callback) => {
+    if (eventListen) return eventListen(event, callback);
+    if (internalListen) return internalListen(event, callback);
+    console.error('Tauri event API is not available:', event);
+    return Promise.resolve(() => {});
+  };
 
   window.petApi = {
     dragStart: (point) => invoke('pet_drag_start', { point }),
