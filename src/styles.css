@@ -147,6 +147,10 @@ body {
   transform: translate(-5px, 3px) scaleX(1.08);
 }
 
+#pet.peek #shadow {
+  opacity: 0;
+}
+
 #pet.clinging #shadow {
   opacity: 0;
 }
