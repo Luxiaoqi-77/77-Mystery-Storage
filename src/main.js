@@ -5,7 +5,6 @@ const path = require('path');
 
 const PET_SIZE = 260;
 const PEEK_VISIBLE = 161;
-const IDLE_HIDE_MS = 1000 * 60 * 4;
 const EDGE_WALK_MS = 1000 * 18;
 const EDGE_PEEK_WALK_MS = 1000;
 const MOUSE_SAMPLE_MS = 60;
@@ -306,24 +305,6 @@ function recallPet() {
   sendState('idle', 0);
 }
 
-function hideToNearestEdge() {
-  if (!win || hiddenEdge) return;
-  if (isAnnoyedLocked()) return;
-  const bounds = win.getBounds();
-  const display = screen.getDisplayMatching(bounds);
-  const area = display.workArea;
-  const distances = {
-    left: Math.abs(bounds.x - area.x),
-    right: Math.abs(area.x + area.width - (bounds.x + bounds.width))
-  };
-  hiddenEdge = Object.keys(distances).sort((a, b) => distances[a] - distances[b])[0];
-  const next = { ...bounds };
-  if (hiddenEdge === 'left') next.x = area.x - PET_SIZE + PEEK_VISIBLE;
-  if (hiddenEdge === 'right') next.x = area.x + area.width - PEEK_VISIBLE;
-  win.setBounds(next);
-  sendPeek(hiddenEdge);
-}
-
 function startEdgePeekWalk(direction) {
   if (!win || edgePeekWalk || hiddenEdge) return;
   if (isAnnoyedLocked()) return;
@@ -423,8 +404,6 @@ function sampleMouse() {
 
   if (headShakeScore >= HEAD_SHAKE_TRIGGER_SCORE && !hiddenEdge && !edgePeekWalk) {
     triggerBefuddledThenSit();
-  } else if (now - lastInteractionAt > IDLE_HIDE_MS && !hiddenEdge && !edgePeekWalk) {
-    hideToNearestEdge();
   }
 
   maybeEdgeWalk();
