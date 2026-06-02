@@ -6,9 +6,12 @@ dist/
 out/
 build/
 release/
+src/assets/
+src-tauri/target/
 
 # Electron cache/runtime downloads
 .electron-cache/
+.npm-cache/
 
 # Logs
 *.log

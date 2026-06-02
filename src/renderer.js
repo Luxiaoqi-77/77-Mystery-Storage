@@ -1,4 +1,4 @@
-const sprite = document.getElementById('sprite');
+﻿const sprite = document.getElementById('sprite');
 const spriteNext = document.getElementById('sprite-next');
 const eyeStack = document.getElementById('eye-stack');
 const irises = document.getElementById('irises');
@@ -7,39 +7,39 @@ const eyelids = document.getElementById('eyelids');
 const pet = document.getElementById('pet');
 
 const assets = {
-  idle: '../assets/pet/base_idle.png',
-  eyeWhites: '../assets/pet/eye_whites.png',
-  irises: '../assets/pet/irises.png',
-  highlights: '../assets/pet/highlights.png',
-  lashes: '../assets/pet/lashes.png',
-  eyelidsHalf: '../assets/pet/eyelids_half.png',
-  eyelidsClosed: '../assets/pet/eyelids_closed.png',
-  lookLeft: '../assets/pet/look_left.png',
-  lookRight: '../assets/pet/look_right.png',
-  lookUp: '../assets/pet/look_up.png',
-  lookDown: '../assets/pet/look_down.png',
-  befuddled: '../assets/pet/befuddled.png',
-  clickHappy: '../assets/pet/click_happy.png',
-  clickAnnoyed: '../assets/pet/click_annoyed.png',
-  lifted: '../assets/pet/lifted.png',
-  liftedBefuddled: '../assets/pet/lifted_befuddled.png',
-  lyingOpen: '../assets/pet/lying_open.png',
-  lyingClosed: '../assets/pet/lying_closed.png',
-  lyingClick: '../assets/pet/lying_click.png',
-  sit: '../assets/pet/sit.png',
-  sitClosed: '../assets/pet/sit_closed.png',
-  sleep: '../assets/pet/sleep.png',
+  idle: './assets/pet/base_idle.png',
+  eyeWhites: './assets/pet/eye_whites.png',
+  irises: './assets/pet/irises.png',
+  highlights: './assets/pet/highlights.png',
+  lashes: './assets/pet/lashes.png',
+  eyelidsHalf: './assets/pet/eyelids_half.png',
+  eyelidsClosed: './assets/pet/eyelids_closed.png',
+  lookLeft: './assets/pet/look_left.png',
+  lookRight: './assets/pet/look_right.png',
+  lookUp: './assets/pet/look_up.png',
+  lookDown: './assets/pet/look_down.png',
+  befuddled: './assets/pet/befuddled.png',
+  clickHappy: './assets/pet/click_happy.png',
+  clickAnnoyed: './assets/pet/click_annoyed.png',
+  lifted: './assets/pet/lifted.png',
+  liftedBefuddled: './assets/pet/lifted_befuddled.png',
+  lyingOpen: './assets/pet/lying_open.png',
+  lyingClosed: './assets/pet/lying_closed.png',
+  lyingClick: './assets/pet/lying_click.png',
+  sit: './assets/pet/sit.png',
+  sitClosed: './assets/pet/sit_closed.png',
+  sleep: './assets/pet/sleep.png',
   peek: {
-    left: '../assets/pet/left_peek.png',
-    right: '../assets/pet/right_peek.png',
-    leftClick: '../assets/pet/left_peek_click.png',
-    rightClick: '../assets/pet/right_peek_click.png',
-    leftClosed: '../assets/pet/left_peek_closed.png',
-    rightClosed: '../assets/pet/right_peek_closed.png'
+    left: './assets/pet/left_peek.png',
+    right: './assets/pet/right_peek.png',
+    leftClick: './assets/pet/left_peek_click.png',
+    rightClick: './assets/pet/right_peek_click.png',
+    leftClosed: './assets/pet/left_peek_closed.png',
+    rightClosed: './assets/pet/right_peek_closed.png'
   },
   walk: {
-    left: ['../assets/pet/walk_left_1.png', '../assets/pet/walk_left_2.png'],
-    right: ['../assets/pet/walk_right_1.png', '../assets/pet/walk_right_2.png']
+    left: ['./assets/pet/walk_left_1.png', './assets/pet/walk_left_2.png'],
+    right: ['./assets/pet/walk_right_1.png', './assets/pet/walk_right_2.png']
   }
 };
 
@@ -682,3 +682,4 @@ window.petApi.onMouseMotion((payload) => {
 setState('idle');
 scheduleBlink();
 lookAroundTimer = setInterval(lookAround, 2200);
+
