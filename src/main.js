@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, screen, nativeImage } = require('electron');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -13,6 +14,9 @@ const AUTONOMOUS_PEEK_REST_MS = 1000 * 60;
 const AUTONOMOUS_SIT_MS = 1000 * 60;
 const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
+const CLING_ATTACH_THRESHOLD = 52;
+const CLING_OVERLAP = 34;
+const CLING_POLL_MS = 280;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
 const ANNOYED_LOCK_MS = 5000;
@@ -42,6 +46,8 @@ let clickBurstStartedAt = 0;
 let clickBurstCount = 0;
 let autonomousAction = null;
 let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
+let attachedWindow = null;
+let lastClingPollAt = 0;
 
 function assetPath(...parts) {
   return path.join(__dirname, '..', ...parts);
@@ -76,6 +82,161 @@ function cancelAutonomousAction(options = {}) {
 function markPetInteraction() {
   lastPetInteractionAt = Date.now();
   cancelAutonomousAction({ clearPeek: true });
+}
+
+function runWindowQuery(script, timeout = 900) {
+  if (process.platform !== 'win32') return null;
+  try {
+    const output = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { encoding: 'utf8', timeout, windowsHide: true }
+    ).trim();
+    if (!output) return null;
+    return JSON.parse(output);
+  } catch {
+    return null;
+  }
+}
+
+function getWindowApiScript() {
+  return `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinPetApi {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+"@
+`;
+}
+
+function getVisibleWindows() {
+  const script = `${getWindowApiScript()}
+$items = New-Object System.Collections.ArrayList
+[WinPetApi]::EnumWindows({
+  param([IntPtr]$hWnd, [IntPtr]$lParam)
+  if (-not [WinPetApi]::IsWindowVisible($hWnd)) { return $true }
+  if ([WinPetApi]::GetWindowTextLength($hWnd) -le 0) { return $true }
+  [uint32]$pid = 0
+  [WinPetApi]::GetWindowThreadProcessId($hWnd, [ref]$pid) | Out-Null
+  if ($pid -eq ${process.pid}) { return $true }
+  $rect = New-Object RECT
+  if (-not [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
+  $width = $rect.Right - $rect.Left
+  $height = $rect.Bottom - $rect.Top
+  if ($width -lt 180 -or $height -lt 120) { return $true }
+  [void]$items.Add([pscustomobject]@{
+    hwnd = $hWnd.ToInt64()
+    left = $rect.Left
+    top = $rect.Top
+    right = $rect.Right
+    bottom = $rect.Bottom
+    width = $width
+    height = $height
+  })
+  return $true
+}, [IntPtr]::Zero) | Out-Null
+$items | ConvertTo-Json -Compress
+`;
+  const result = runWindowQuery(script, 1200);
+  if (!result) return [];
+  return Array.isArray(result) ? result : [result];
+}
+
+function getWindowRectByHandle(hwnd) {
+  const script = `${getWindowApiScript()}
+$hWnd = [IntPtr]${Number(hwnd)}
+$rect = New-Object RECT
+if (([WinPetApi]::IsWindowVisible($hWnd)) -and ([WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) -and ($rect.Right -gt $rect.Left) -and ($rect.Bottom -gt $rect.Top)) {
+  [pscustomobject]@{
+    hwnd = $hWnd.ToInt64()
+    left = $rect.Left
+    top = $rect.Top
+    right = $rect.Right
+    bottom = $rect.Bottom
+    width = $rect.Right - $rect.Left
+    height = $rect.Bottom - $rect.Top
+  } | ConvertTo-Json -Compress
+}
+`;
+  return runWindowQuery(script, 700);
+}
+
+function findTopAttachTarget(bounds, point) {
+  const petLeft = bounds.x;
+  const petRight = bounds.x + bounds.width;
+  const petBottom = bounds.y + bounds.height;
+  const centerX = bounds.x + bounds.width / 2;
+
+  return getVisibleWindows()
+    .map((candidate) => {
+      const overlap = Math.min(petRight, candidate.right) - Math.max(petLeft, candidate.left);
+      const topDistance = Math.abs(petBottom - candidate.top);
+      const pointerTopDistance = point ? Math.abs(point.y - candidate.top) : Number.POSITIVE_INFINITY;
+      const centerInside = centerX >= candidate.left - 24 && centerX <= candidate.right + 24;
+      const pointerInside = point && point.x >= candidate.left - 24 && point.x <= candidate.right + 24;
+      const nearTop = topDistance <= CLING_ATTACH_THRESHOLD || pointerTopDistance <= CLING_ATTACH_THRESHOLD;
+      return {
+        ...candidate,
+        score: Math.min(topDistance, pointerTopDistance) - overlap / 20,
+        overlap,
+        centerInside,
+        pointerInside,
+        nearTop
+      };
+    })
+    .filter((candidate) => candidate.nearTop && candidate.overlap > 48 && (candidate.centerInside || candidate.pointerInside))
+    .sort((a, b) => a.score - b.score)[0] || null;
+}
+
+function setAttachedWindowBounds(rect) {
+  if (!win) return;
+  const current = win.getBounds();
+  const x = Math.round(Math.min(Math.max(current.x, rect.left - PET_SIZE + 42), rect.right - 42));
+  const y = Math.round(rect.top - PET_SIZE + CLING_OVERLAP);
+  win.setBounds({ x, y, width: PET_SIZE, height: PET_SIZE });
+}
+
+function attachToWindow(rect) {
+  if (!win || isAnnoyedLocked()) return false;
+  attachedWindow = { hwnd: rect.hwnd };
+  hiddenEdge = null;
+  edgePeekWalk = null;
+  autonomousAction = null;
+  currentPetState = 'cling_top';
+  lastClingPollAt = Date.now();
+  setAttachedWindowBounds(rect);
+  win.webContents.send('pet-state', { state: 'cling_top', durationMs: 0 });
+  scheduleNextIdleAction();
+  return true;
+}
+
+function detachFromWindow(options = {}) {
+  if (!attachedWindow) return;
+  attachedWindow = null;
+  lastClingPollAt = 0;
+  if (options.toIdle) sendIdleFromMain();
+  scheduleNextIdleAction();
+}
+
+function updateAttachedWindow(now) {
+  if (!attachedWindow || !win) return false;
+  if (now - lastClingPollAt < CLING_POLL_MS) return true;
+  lastClingPollAt = now;
+  const rect = getWindowRectByHandle(attachedWindow.hwnd);
+  if (!rect || rect.width < 180 || rect.height < 80) {
+    detachFromWindow({ toIdle: true });
+    return false;
+  }
+  setAttachedWindowBounds(rect);
+  return true;
 }
 
 function createWindow() {
@@ -215,6 +376,7 @@ function setWindowsStartupScript(enabled) {
 function sendState(state, durationMs, options = {}) {
   if (!win) return;
   if (isAnnoyedLocked() && state !== 'idle') return;
+  if (attachedWindow && state !== 'cling_top') detachFromWindow();
   currentPetState = state;
   if (options.countAsInteraction !== false) markPetInteraction();
   lastInteractionAt = Date.now();
@@ -596,6 +758,8 @@ function sampleMouse() {
     return;
   }
 
+  if (updateAttachedWindow(now)) return;
+
   updateAutonomousAction(now);
   if (autonomousAction) return;
 
@@ -609,6 +773,7 @@ function sampleMouse() {
 ipcMain.on('pet-drag-start', (_event, point) => {
   if (!win) return;
   if (isAnnoyedLocked()) return;
+  detachFromWindow();
   const bounds = win.getBounds();
   dragging = true;
   dragOffset = { x: point.x - bounds.x, y: point.y - bounds.y };
@@ -642,6 +807,8 @@ ipcMain.on('pet-drag-end', (_event, data = {}) => {
     sendBefuddledThenSit(3000);
     return;
   }
+  const attachTarget = findTopAttachTarget(win.getBounds(), data.point);
+  if (attachTarget && attachToWindow(attachTarget)) return;
   sendState('idle', 0, { startGaze: data.startGaze !== false });
 });
 

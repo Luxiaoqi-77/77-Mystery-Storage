@@ -23,6 +23,8 @@ const assets = {
   clickAnnoyed: '../assets/pet/click_annoyed.png',
   lifted: '../assets/pet/lifted.png',
   liftedBefuddled: '../assets/pet/lifted_befuddled.png',
+  lyingOpen: '../assets/pet/lying_open.png',
+  lyingClosed: '../assets/pet/lying_closed.png',
   sit: '../assets/pet/sit.png',
   sitClosed: '../assets/pet/sit_closed.png',
   sleep: '../assets/pet/sleep.png',
@@ -54,6 +56,8 @@ const assets = {
   assets.lookDown,
   assets.befuddled,
   assets.liftedBefuddled,
+  assets.lyingOpen,
+  assets.lyingClosed,
   assets.sit,
   assets.sitClosed,
   assets.peek.left,
@@ -76,6 +80,7 @@ const poseOffsets = {
   befuddled: { x: 0.3, y: 0.8 },
   sit: { x: 0.4, y: 12 },
   sleep: { x: -7, y: 21 },
+  clingTop: { x: 0, y: 2 },
   lifted: { x: 0.5, y: -9 },
   liftedBefuddled: { x: 0.5, y: -9 },
   peekLeft: { x: 2.1, y: 2.5 },
@@ -94,6 +99,7 @@ let blinkTimer = null;
 let peekBlinkTimer = null;
 let peekClickTimer = null;
 let sitBlinkTimer = null;
+let clingBlinkTimer = null;
 let walkTimer = null;
 let lookAroundTimer = null;
 let holdTimer = null;
@@ -245,6 +251,13 @@ function stopSitBlink() {
   }
 }
 
+function stopClingBlink() {
+  if (clingBlinkTimer) {
+    clearTimeout(clingBlinkTimer);
+    clingBlinkTimer = null;
+  }
+}
+
 function stopLiftedBefuddledTimer() {
   if (liftedBefuddledTimer) {
     clearTimeout(liftedBefuddledTimer);
@@ -284,9 +297,11 @@ function setState(state, durationMs = 0, options = {}) {
   pet.classList.toggle('sleeping', state === 'sleep');
   pet.classList.toggle('peek', state === 'peek');
   pet.classList.toggle('sitting', state === 'sit');
+  pet.classList.toggle('clinging', state === 'cling_top');
   pet.classList.toggle('lifted', state === 'lifted' || state === 'lifted_befuddled');
   setEyeStackVisible(state === 'idle');
   if (state !== 'sit') stopSitBlink();
+  if (state !== 'cling_top') stopClingBlink();
   if (state !== 'lifted_befuddled') stopLiftedBefuddledTimer();
   if (state !== 'idle') {
     hideEyelids();
@@ -307,6 +322,11 @@ function setState(state, durationMs = 0, options = {}) {
     scheduleSitBlink();
   }
   if (state === 'sleep') setSprite(assets.sleep, 'sleep');
+  if (state === 'cling_top') {
+    stopGazeFollow();
+    setSprite(assets.lyingOpen, 'clingTop');
+    scheduleClingBlink();
+  }
   if (state === 'lifted') setSprite(assets.lifted, 'lifted');
   if (state === 'lifted_befuddled') setSprite(assets.liftedBefuddled, 'liftedBefuddled');
   if (state === 'peek') {
@@ -384,6 +404,21 @@ function sitBlink() {
 function scheduleSitBlink() {
   stopSitBlink();
   sitBlinkTimer = setTimeout(sitBlink, 2300 + Math.random() * 3600);
+}
+
+function clingBlink() {
+  if (currentState !== 'cling_top') return;
+  setSprite(assets.lyingClosed, 'clingTop');
+  clingBlinkTimer = setTimeout(() => {
+    if (currentState !== 'cling_top') return;
+    setSprite(assets.lyingOpen, 'clingTop');
+    scheduleClingBlink();
+  }, 150);
+}
+
+function scheduleClingBlink() {
+  stopClingBlink();
+  clingBlinkTimer = setTimeout(clingBlink, 2400 + Math.random() * 3800);
 }
 
 function startWalk(direction = 'right') {
@@ -500,7 +535,8 @@ pet.addEventListener('mousedown', (event) => {
 
   const startedInPeek = currentState === 'peek';
   const startedInSit = currentState === 'sit';
-  if (!startedInPeek && !startedInSit) {
+  const startedInCling = currentState === 'cling_top';
+  if (!startedInPeek && !startedInSit && !startedInCling) {
     dragStarted = true;
     pet.classList.add('dragging');
     window.petApi.dragStart({ x: event.screenX, y: event.screenY });
@@ -530,7 +566,7 @@ window.addEventListener('mousemove', (event) => {
   window.petApi.dragMove({ x: event.screenX, y: event.screenY });
 });
 
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', (event) => {
   if (isInteractionLocked()) {
     resetPointerInteraction();
     return;
@@ -547,7 +583,8 @@ window.addEventListener('mouseup', () => {
   if (dragStarted) {
     window.petApi.dragEnd({
       startGaze: droppedWhileLiftedBefuddled ? false : dragEndStartsGaze,
-      liftedBefuddledDrop: droppedWhileLiftedBefuddled
+      liftedBefuddledDrop: droppedWhileLiftedBefuddled,
+      point: { x: event.screenX, y: event.screenY }
     });
   }
   dragStarted = false;
@@ -558,6 +595,7 @@ window.addEventListener('mouseup', () => {
 pet.addEventListener('click', () => {
   if (isInteractionLocked()) return;
   if (currentState === 'sit') return;
+  if (currentState === 'cling_top') return;
   if (movedDuringDrag || wasLongPress) return;
   if (triggerPeekClick()) return;
   pet.classList.remove('clicked');
