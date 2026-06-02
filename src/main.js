@@ -6,6 +6,7 @@ const path = require('path');
 const PET_SIZE = 260;
 const PEEK_VISIBLE = 161;
 const IDLE_RANDOM_ACTION_MS = 1000 * 30;
+const IDLE_NOTHING_CHANCE = 0.2;
 const EDGE_WALK_MS = 1000 * 18;
 const EDGE_PEEK_WALK_MS = 1000;
 const AUTONOMOUS_PEEK_REST_MS = 1000 * 60;
@@ -403,6 +404,9 @@ function chooseRandomIdleAction(bounds, area) {
   const nearEdge = isNearHorizontalEdge(bounds, area);
   const walkChance = nearEdge ? 0.4 : 0.2;
   const sitChance = nearEdge ? 0.225 : 0.3;
+  const actionRoll = Math.random();
+  if (actionRoll < IDLE_NOTHING_CHANCE) return { type: 'nothing' };
+
   const roll = Math.random();
 
   if (roll < walkChance) {
@@ -425,6 +429,10 @@ function startRandomIdleAction() {
   const bounds = win.getBounds();
   const display = screen.getDisplayMatching(bounds);
   const action = chooseRandomIdleAction(bounds, display.workArea);
+  if (action.type === 'nothing') {
+    scheduleNextIdleAction();
+    return;
+  }
   if (action.type === 'walk') {
     startAutonomousWalk(action.direction);
     return;
