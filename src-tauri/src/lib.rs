@@ -168,15 +168,16 @@ fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
 }
 
 fn emit_state(app: &AppHandle, state: &str, duration_ms: u64, direction: Option<&str>, start_gaze: Option<bool>) {
-    let _ = app.emit(
-        "pet-state",
-        StatePayload {
-            state: state.to_string(),
-            duration_ms,
-            direction: direction.map(ToString::to_string),
-            start_gaze,
-        },
-    );
+    let app = app.clone();
+    let payload = StatePayload {
+        state: state.to_string(),
+        duration_ms,
+        direction: direction.map(ToString::to_string),
+        start_gaze,
+    };
+    tauri::async_runtime::spawn(async move {
+        let _ = app.emit("pet-state", payload);
+    });
 }
 
 fn set_window_position(window: &WebviewWindow, x: i32, y: i32) {
@@ -836,17 +837,14 @@ fn sample_loop(app: AppHandle) {
                     }
                 }
                 state.last_cursor = Some((cursor.x, cursor.y, now));
-                let _ = app.emit(
-                    "mouse-motion",
-                    MotionPayload {
-                        x: cursor.x,
-                        y: cursor.y,
-                        speed,
-                        head_shake_score: 0.0,
-                        idle_ms: now.duration_since(state.last_interaction_at).as_millis() as u64,
-                        bounds,
-                    },
-                );
+                let _motion = MotionPayload {
+                    x: cursor.x,
+                    y: cursor.y,
+                    speed,
+                    head_shake_score: 0.0,
+                    idle_ms: now.duration_since(state.last_interaction_at).as_millis() as u64,
+                    bounds,
+                };
                 if is_annoyed_locked(&state) {
                     if state
                         .annoyed_locked_until
@@ -933,6 +931,9 @@ pub fn run() {
         .setup(|app| {
             let window = app.get_webview_window("main").expect("main window missing");
             let _ = window.set_size(PhysicalSize::new(PET_SIZE as u32, PET_SIZE as u32));
+            let _ = window.set_decorations(false);
+            let _ = window.set_shadow(false);
+            let _ = window.set_skip_taskbar(true);
             let _ = window.set_always_on_top(true);
             if let Ok(Some(monitor)) = window.primary_monitor() {
                 let pos = monitor.position();

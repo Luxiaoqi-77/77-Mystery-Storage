@@ -113,6 +113,9 @@ let movedDuringDrag = false;
 let wasLongPress = false;
 let dragEndStartsGaze = true;
 let pointerDownPoint = null;
+let pendingDragMove = null;
+let dragMoveInFlight = false;
+let dragMoveFrame = 0;
 let liftedShakeScore = 0;
 let liftedShakeAxis = null;
 let lastDragPoint = null;
@@ -282,6 +285,39 @@ function resetLiftedShake() {
   lastDragPoint = null;
 }
 
+function flushDragMove() {
+  dragMoveFrame = 0;
+  if (!pendingDragMove || dragMoveInFlight) return;
+
+  const point = pendingDragMove;
+  pendingDragMove = null;
+  dragMoveInFlight = true;
+  window.petApi.dragMove(point)
+    .catch((error) => console.error('dragMove failed', error))
+    .finally(() => {
+      dragMoveInFlight = false;
+      if (pendingDragMove && !dragMoveFrame) {
+        dragMoveFrame = requestAnimationFrame(flushDragMove);
+      }
+    });
+}
+
+function queueDragMove(point) {
+  pendingDragMove = point;
+  if (!dragMoveFrame && !dragMoveInFlight) {
+    dragMoveFrame = requestAnimationFrame(flushDragMove);
+  }
+}
+
+function resetDragMoveQueue() {
+  pendingDragMove = null;
+  dragMoveInFlight = false;
+  if (dragMoveFrame) {
+    cancelAnimationFrame(dragMoveFrame);
+    dragMoveFrame = 0;
+  }
+}
+
 function isInteractionLocked() {
   return currentState === 'click_annoyed';
 }
@@ -300,6 +336,7 @@ function resetPointerInteraction() {
   }
   stopLiftedBefuddledTimer();
   resetLiftedShake();
+  resetDragMoveQueue();
 }
 
 function setState(state, durationMs = 0, options = {}) {
@@ -610,7 +647,7 @@ window.addEventListener('mousemove', (event) => {
   if (!dragStarted) return;
   movedDuringDrag = true;
   trackLiftedShake({ x: event.screenX, y: event.screenY });
-  window.petApi.dragMove({ x: event.screenX, y: event.screenY });
+  queueDragMove({ x: event.screenX, y: event.screenY });
 });
 
 window.addEventListener('mouseup', (event) => {
@@ -625,6 +662,7 @@ window.addEventListener('mouseup', (event) => {
     holdTimer = null;
   }
   pet.classList.remove('dragging');
+  resetDragMoveQueue();
   const droppedWhileLiftedBefuddled = currentState === 'lifted_befuddled';
   if (droppedWhileLiftedBefuddled) stopLiftedBefuddledTimer();
   if (dragStarted) {
