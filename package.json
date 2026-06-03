@@ -1,0 +1,32 @@
+{
+  "name": "shen-xiao-hui",
+  "version": "0.1.0",
+  "description": "沈小回 Windows 桌面宠物。",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "electron:build": "electron-builder --win portable",
+    "build": "npm run electron:build"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^32.3.3",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.local.shen-xiao-hui",
+    "productName": "沈小回",
+    "artifactName": "沈小回.exe",
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": "portable"
+    }
+  }
+}
