@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+build/
+release/
+src/assets/
+src-tauri/target/
+
+# Electron cache/runtime downloads
+.electron-cache/
+.npm-cache/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Local reference material, not required by the app
+assets/原图/
+角色设定参考.md
