@@ -4,8 +4,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const PET_SIZE = 260;
-const PEEK_VISIBLE = 161;
+const DEFAULT_PET_SIZE = 260;
+const DEFAULT_PEEK_VISIBLE = 161;
+const MIN_PET_SCALE = 0.7;
+const MAX_PET_SCALE = 1.4;
 const IDLE_RANDOM_ACTION_MS = 1000 * 30;
 const IDLE_NOTHING_CHANCE = 0.2;
 const EDGE_WALK_MS = 1000 * 18;
@@ -16,7 +18,7 @@ const AUTONOMOUS_SLEEP_MS = 1000 * 60 * 2;
 const AUTONOMOUS_WALK_STEP = 3;
 const CLING_ATTACH_THRESHOLD = 52;
 const CLING_OVERLAP = 42;
-const CLING_POLL_MS = 24;
+const CLING_POLL_MS = 12;
 const MOUSE_SAMPLE_MS = 60;
 const HEAD_SHAKE_TRIGGER_SCORE = 9;
 const ANNOYED_LOCK_MS = 5000;
@@ -49,6 +51,7 @@ let autonomousAction = null;
 let nextIdleActionAt = Date.now() + IDLE_RANDOM_ACTION_MS;
 let attachedWindow = null;
 let lastClingPollAt = 0;
+let lastClingPetBounds = null;
 let clingTracker = null;
 let clingTrackerBuffer = '';
 let cachedVisibleWindows = [];
@@ -56,6 +59,21 @@ let windowListTracker = null;
 let windowListTrackerBuffer = '';
 let petMousePassthrough = false;
 let normalAlwaysOnTop = true;
+let petScale = 1;
+
+function getPetSize() {
+  return Math.round(DEFAULT_PET_SIZE * petScale);
+}
+
+function getPeekVisible() {
+  return Math.round(DEFAULT_PEEK_VISIBLE * petScale);
+}
+
+function clampPetScale(scale) {
+  const value = Number(scale);
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(Math.max(value, MIN_PET_SCALE), MAX_PET_SCALE);
+}
 
 function assetPath(...parts) {
   return path.join(__dirname, '..', ...parts);
@@ -130,6 +148,7 @@ public class WinPetApi {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
@@ -268,7 +287,9 @@ function getWindowRectByHandle(hwnd) {
   const script = `${getWindowApiScript()}
 $hWnd = [IntPtr]${Number(hwnd)}
 $rect = New-Object RECT
-if (([WinPetApi]::IsWindowVisible($hWnd)) -and ([WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) -and ($rect.Right -gt $rect.Left) -and ($rect.Bottom -gt $rect.Top)) {
+$visible = [WinPetApi]::IsWindowVisible($hWnd)
+$minimized = [WinPetApi]::IsIconic($hWnd)
+if (($visible -or $minimized) -and ([WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) -and ($rect.Right -gt $rect.Left) -and ($rect.Bottom -gt $rect.Top)) {
   [pscustomobject]@{
     hwnd = $hWnd.ToInt64()
     left = $rect.Left
@@ -278,10 +299,81 @@ if (([WinPetApi]::IsWindowVisible($hWnd)) -and ([WinPetApi]::GetWindowRect($hWnd
     width = $rect.Right - $rect.Left
     height = $rect.Bottom - $rect.Top
     topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
+    minimized = $minimized
+    visible = $visible
   } | ConvertTo-Json -Compress
 }
 `;
   return runWindowQuery(script, 700);
+}
+
+function moveIdleNearLastCling() {
+  if (!win || !lastClingPetBounds) return;
+  const size = getPetSize();
+  const display = screen.getDisplayMatching(lastClingPetBounds);
+  const area = display.workArea;
+  const x = Math.min(
+    Math.max(lastClingPetBounds.x, area.x),
+    area.x + area.width - size
+  );
+  const y = Math.min(
+    Math.max(lastClingPetBounds.y, area.y),
+    area.y + area.height - size
+  );
+  win.setBounds({ x: Math.round(x), y: Math.round(y), width: size, height: size });
+}
+
+function showPetOnDesktop() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) {
+    win.showInactive();
+  } else {
+    win.showInactive();
+  }
+  if (typeof win.moveTop === 'function') win.moveTop();
+}
+
+function emitPetSize() {
+  if (win) win.webContents.send('pet-size', { scale: petScale, size: getPetSize() });
+}
+
+function setPetScale(nextScale) {
+  if (!win) return;
+  const scale = clampPetScale(nextScale);
+  if (Math.abs(scale - petScale) < 0.001) {
+    emitPetSize();
+    return;
+  }
+
+  const oldBounds = win.getBounds();
+  petScale = scale;
+  const size = getPetSize();
+  const display = screen.getDisplayMatching(oldBounds);
+  const area = display.workArea;
+  const centerX = oldBounds.x + oldBounds.width / 2;
+  const bottom = oldBounds.y + oldBounds.height;
+  let x = Math.round(centerX - size / 2);
+  let y = Math.round(bottom - size);
+
+  if (hiddenEdge === 'left') {
+    x = area.x - size + getPeekVisible();
+  } else if (hiddenEdge === 'right') {
+    x = area.x + area.width - getPeekVisible();
+  } else if (!attachedWindow) {
+    x = Math.min(Math.max(x, area.x - size + getPeekVisible()), area.x + area.width - getPeekVisible());
+  }
+  y = Math.min(Math.max(y, area.y), area.y + area.height - size);
+
+  win.setBounds({ x, y, width: size, height: size });
+  if (attachedWindow) {
+    const rect = getWindowRectByHandle(attachedWindow.hwnd);
+    if (rect && !rect.minimized && rect.visible && rect.width >= 180 && rect.height >= 80) {
+      setAttachedWindowBounds(rect);
+    }
+  }
+  emitPetSize();
+  if (tray) tray.setContextMenu(buildMenu());
 }
 
 function findTopAttachTarget(bounds, point) {
@@ -314,13 +406,15 @@ function findTopAttachTarget(bounds, point) {
 
 function setAttachedWindowBounds(rect) {
   if (!win) return;
-  const fallbackOffsetX = Math.round((rect.width - PET_SIZE) / 2);
+  const size = getPetSize();
+  const fallbackOffsetX = Math.round((rect.width - size) / 2);
   const offsetX = attachedWindow?.offsetX ?? fallbackOffsetX;
-  const minOffsetX = -PET_SIZE + 42;
+  const minOffsetX = -size + 42;
   const maxOffsetX = rect.width - 42;
   const x = Math.round(rect.left + Math.min(Math.max(offsetX, minOffsetX), maxOffsetX));
-  const y = Math.round(rect.top - PET_SIZE + CLING_OVERLAP);
-  win.setBounds({ x, y, width: PET_SIZE, height: PET_SIZE });
+  const y = Math.round(rect.top - size + CLING_OVERLAP);
+  win.setBounds({ x, y, width: size, height: size });
+  lastClingPetBounds = { x, y, width: size, height: size };
   win.setAlwaysOnTop(Boolean(rect.topmost), 'screen-saver');
 }
 
@@ -347,8 +441,8 @@ function handleClingTrackerLine(line) {
   } catch {
     return;
   }
-  if (!rect.visible || rect.width < 180 || rect.height < 80) {
-    detachFromWindow({ toIdle: true });
+  if (rect.minimized || !rect.visible || rect.width < 180 || rect.height < 80) {
+    detachFromWindow({ toIdle: true, restoreNearCling: Boolean(rect.minimized || !rect.visible) });
     return;
   }
   setAttachedWindowBounds(rect);
@@ -362,7 +456,8 @@ $hWnd = [IntPtr]${Number(hwnd)}
 while ($true) {
   $rect = New-Object RECT
   $visible = [WinPetApi]::IsWindowVisible($hWnd)
-  if ($visible -and [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) {
+  $minimized = [WinPetApi]::IsIconic($hWnd)
+  if (($visible -or $minimized) -and [WinPetApi]::GetWindowRect($hWnd, [ref]$rect)) {
     [pscustomobject]@{
       hwnd = $hWnd.ToInt64()
       left = $rect.Left
@@ -372,7 +467,8 @@ while ($true) {
       width = $rect.Right - $rect.Left
       height = $rect.Bottom - $rect.Top
       topmost = (([WinPetApi]::GetWindowLong($hWnd, -20) -band 8) -ne 0)
-      visible = $true
+      minimized = $minimized
+      visible = $visible
     } | ConvertTo-Json -Compress
   } else {
     [pscustomobject]@{ visible = $false } | ConvertTo-Json -Compress
@@ -399,6 +495,7 @@ function attachToWindow(rect) {
   if (!win || isAnnoyedLocked()) return false;
   const bounds = win.getBounds();
   attachedWindow = { hwnd: rect.hwnd, offsetX: Math.round(bounds.x - rect.left) };
+  lastClingPetBounds = bounds;
   hiddenEdge = null;
   edgePeekWalk = null;
   autonomousAction = null;
@@ -423,6 +520,8 @@ function detachFromWindow(options = {}) {
   setPetMousePassthrough(false);
   win.setFocusable(true);
   win.setAlwaysOnTop(normalAlwaysOnTop, 'screen-saver');
+  if (options.restoreNearCling) moveIdleNearLastCling();
+  if (options.toIdle || options.restoreNearCling) showPetOnDesktop();
   if (options.toIdle) sendIdleFromMain();
   scheduleNextIdleAction();
 }
@@ -433,8 +532,8 @@ function updateAttachedWindow(now) {
   if (now - lastClingPollAt < CLING_POLL_MS) return true;
   lastClingPollAt = now;
   const rect = getWindowRectByHandle(attachedWindow.hwnd);
-  if (!rect || rect.width < 180 || rect.height < 80) {
-    detachFromWindow({ toIdle: true });
+  if (!rect || rect.minimized || !rect.visible || rect.width < 180 || rect.height < 80) {
+    detachFromWindow({ toIdle: true, restoreNearCling: Boolean(!rect || rect.minimized || !rect.visible) });
     return false;
   }
   setAttachedWindowBounds(rect);
@@ -444,12 +543,16 @@ function updateAttachedWindow(now) {
 function createWindow() {
   const display = screen.getPrimaryDisplay();
   const area = display.workArea;
+  const size = getPetSize();
+  const icon = nativeImage.createFromPath(assetPath('assets', 'brand', 'logo.png'));
 
   win = new BrowserWindow({
-    width: PET_SIZE,
-    height: PET_SIZE,
-    x: area.x + area.width - PET_SIZE - 48,
-    y: area.y + area.height - PET_SIZE - 24,
+    width: size,
+    height: size,
+    x: area.x + area.width - size - 48,
+    y: area.y + area.height - size - 24,
+    title: '沈小回',
+    icon,
     frame: false,
     transparent: true,
     resizable: false,
@@ -464,17 +567,19 @@ function createWindow() {
   });
 
   win.setAlwaysOnTop(true, 'screen-saver');
+  win.setSkipTaskbar(true);
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.loadFile(path.join(__dirname, 'index.html'));
+  win.webContents.once('did-finish-load', emitPetSize);
   win.on('closed', () => {
     win = null;
   });
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(assetPath('assets', 'pet', 'base_idle.png')).resize({ width: 16, height: 16 });
+  const icon = nativeImage.createFromPath(assetPath('assets', 'brand', 'logo.png')).resize({ width: 16, height: 16 });
   tray = new Tray(icon);
-  tray.setToolTip('桌宠');
+  tray.setToolTip('沈小回');
   tray.setContextMenu(buildMenu());
 }
 
@@ -547,7 +652,7 @@ function getWindowsStartupScriptPath() {
     'Start Menu',
     'Programs',
     'Startup',
-    '桌宠.vbs'
+    '沈小回.vbs'
   );
 }
 
@@ -559,12 +664,12 @@ function setWindowsStartupScript(enabled) {
     return;
   }
 
-  const localPortablePath = path.join(os.homedir(), 'Documents', '桌宠', 'dist', '桌宠 0.1.0.exe');
+  const localPortablePath = path.join(os.homedir(), 'Documents', '桌宠', 'dist', '沈小回.exe');
   const exePath = fs.existsSync(localPortablePath)
     ? localPortablePath
     : app.isPackaged
       ? (process.env.PORTABLE_EXECUTABLE_FILE || process.execPath)
-      : path.join(__dirname, '..', 'dist', '桌宠 0.1.0.exe');
+      : path.join(__dirname, '..', 'dist', '沈小回.exe');
   const escapedExePath = exePath.replace(/"/g, '""');
   const script = [
     'Set WshShell = CreateObject("WScript.Shell")',
@@ -697,13 +802,14 @@ function sendMotion(payload) {
 function recallPet() {
   if (!win) return;
   if (isAnnoyedLocked()) return;
+  const size = getPetSize();
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
   const area = display.workArea;
   const M = 12;
-  const targetX = Math.min(Math.max(cursor.x - PET_SIZE / 2, area.x + M), area.x + area.width - PET_SIZE - M);
-  const targetY = Math.min(Math.max(cursor.y - PET_SIZE / 2, area.y + M), area.y + area.height - PET_SIZE - M);
-  win.setBounds({ x: Math.round(targetX), y: Math.round(targetY), width: PET_SIZE, height: PET_SIZE });
+  const targetX = Math.min(Math.max(cursor.x - size / 2, area.x + M), area.x + area.width - size - M);
+  const targetY = Math.min(Math.max(cursor.y - size / 2, area.y + M), area.y + area.height - size - M);
+  win.setBounds({ x: Math.round(targetX), y: Math.round(targetY), width: size, height: size });
   hiddenEdge = null;
   lastInteractionAt = Date.now();
   sendState('idle', 0);
@@ -723,10 +829,13 @@ function startEdgePeekWalk(direction) {
 function finishEdgePeekWalk(area) {
   if (!win || !edgePeekWalk) return;
   const direction = edgePeekWalk.direction;
+  const size = getPetSize();
   const bounds = win.getBounds();
   const next = { ...bounds };
-  next.x = direction === 'left' ? area.x - PET_SIZE + PEEK_VISIBLE : area.x + area.width - PEEK_VISIBLE;
-  next.y = Math.min(Math.max(bounds.y, area.y), area.y + area.height - PET_SIZE);
+  next.x = direction === 'left' ? area.x - size + getPeekVisible() : area.x + area.width - getPeekVisible();
+  next.y = Math.min(Math.max(bounds.y, area.y), area.y + area.height - size);
+  next.width = size;
+  next.height = size;
   win.setBounds(next);
   hiddenEdge = direction;
   edgePeekWalk = null;
@@ -814,6 +923,8 @@ function finishAutonomousPeek(edge) {
 function updateAutonomousAction(now) {
   if (!win || dragging || isAnnoyedLocked()) return;
   const bounds = win.getBounds();
+  const size = getPetSize();
+  const peekVisible = getPeekVisible();
   const display = screen.getDisplayMatching(bounds);
   const area = display.workArea;
 
@@ -841,20 +952,20 @@ function updateAutonomousAction(now) {
   const next = { ...bounds, x: bounds.x + dx };
 
   if (autonomousAction.type === 'walk') {
-    const reachesLeft = next.x <= area.x - PET_SIZE + PEEK_VISIBLE;
-    const reachesRight = next.x + PET_SIZE >= area.x + area.width + PET_SIZE - PEEK_VISIBLE;
+    const reachesLeft = next.x <= area.x - size + peekVisible;
+    const reachesRight = next.x + size >= area.x + area.width + size - peekVisible;
     const walkedDistance = Math.abs(next.x - autonomousAction.originX);
     if (direction === 'left' && reachesLeft) {
-      next.x = area.x - PET_SIZE + PEEK_VISIBLE;
-      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      next.x = area.x - size + peekVisible;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
       hiddenEdge = 'left';
       autonomousAction = { type: 'peek-rest', edge: 'left', until: now + AUTONOMOUS_PEEK_REST_MS };
       sendPeek('left');
       return;
     }
     if (direction === 'right' && reachesRight) {
-      next.x = area.x + area.width - PEEK_VISIBLE;
-      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      next.x = area.x + area.width - peekVisible;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
       hiddenEdge = 'right';
       autonomousAction = { type: 'peek-rest', edge: 'right', until: now + AUTONOMOUS_PEEK_REST_MS };
       sendPeek('right');
@@ -863,27 +974,27 @@ function updateAutonomousAction(now) {
     if (walkedDistance >= autonomousAction.maxDistance) {
       const limitedX = autonomousAction.originX + (direction === 'left' ? -autonomousAction.maxDistance : autonomousAction.maxDistance);
       const minX = area.x + 12;
-      const maxX = area.x + area.width - PET_SIZE - 12;
+      const maxX = area.x + area.width - size - 12;
       next.x = Math.min(Math.max(limitedX, minX), maxX);
-      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
       cancelAutonomousAction({ toIdle: true });
       return;
     }
-    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
     return;
   }
 
   if (autonomousAction.type === 'leave-peek') {
     const fullyInsideLeft = direction === 'right' && next.x >= area.x + 12;
-    const fullyInsideRight = direction === 'left' && next.x + PET_SIZE <= area.x + area.width - 12;
+    const fullyInsideRight = direction === 'left' && next.x + size <= area.x + area.width - 12;
     if (fullyInsideLeft || fullyInsideRight) {
-      next.x = direction === 'right' ? area.x + 12 : area.x + area.width - PET_SIZE - 12;
-      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+      next.x = direction === 'right' ? area.x + 12 : area.x + area.width - size - 12;
+      win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
       hiddenEdge = null;
       cancelAutonomousAction({ toIdle: true });
       return;
     }
-    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+    win.setBounds({ x: Math.round(next.x), y: bounds.y, width: size, height: size });
   }
 }
 
@@ -893,6 +1004,8 @@ function maybeEdgeWalk() {
   if (autonomousAction) return;
   const now = Date.now();
   const bounds = win.getBounds();
+  const size = getPetSize();
+  const peekVisible = getPeekVisible();
   const display = screen.getDisplayMatching(bounds);
   const area = display.workArea;
 
@@ -903,10 +1016,10 @@ function maybeEdgeWalk() {
     }
     const S = 4;
     const dx = edgePeekWalk.direction === 'left' ? -S : S;
-    const minX = area.x - PET_SIZE + PEEK_VISIBLE;
-    const maxX = area.x + area.width - PEEK_VISIBLE;
+    const minX = area.x - size + peekVisible;
+    const maxX = area.x + area.width - peekVisible;
     const x = Math.min(Math.max(bounds.x + dx, minX), maxX);
-    win.setBounds({ x: Math.round(x), y: bounds.y, width: PET_SIZE, height: PET_SIZE });
+    win.setBounds({ x: Math.round(x), y: bounds.y, width: size, height: size });
     return;
   }
 
@@ -991,11 +1104,12 @@ ipcMain.on('pet-drag-move', (_event, point) => {
   if (!win || !dragging) return;
   if (isAnnoyedLocked()) return;
   resetClickChain();
+  const size = getPetSize();
   const display = screen.getDisplayNearestPoint(point);
   const area = display.workArea;
-  const x = Math.min(Math.max(point.x - dragOffset.x, area.x), area.x + area.width - PET_SIZE);
-  const y = Math.min(Math.max(point.y - dragOffset.y, area.y), area.y + area.height - PET_SIZE);
-  win.setBounds({ x: Math.round(x), y: Math.round(y), width: PET_SIZE, height: PET_SIZE });
+  const x = Math.min(Math.max(point.x - dragOffset.x, area.x), area.x + area.width - size);
+  const y = Math.min(Math.max(point.y - dragOffset.y, area.y), area.y + area.height - size);
+  win.setBounds({ x: Math.round(x), y: Math.round(y), width: size, height: size });
 });
 
 ipcMain.on('pet-drag-end', (_event, data = {}) => {
@@ -1030,6 +1144,11 @@ ipcMain.on('pet-lifted', () => {
 ipcMain.on('pet-wake-idle', (_event, data = {}) => {
   if (isAnnoyedLocked()) return;
   sendState('idle', 0, { startGaze: data.startGaze !== false });
+});
+
+ipcMain.on('pet-size-scale', (_event, scale) => {
+  if (isAnnoyedLocked()) return;
+  setPetScale(scale);
 });
 
 ipcMain.on('pet-click', (_event, data) => {
@@ -1067,6 +1186,9 @@ ipcMain.on('pet-cling-hit-test', (_event, interactive) => {
   }
   setPetMousePassthrough(!interactive);
 });
+
+app.setName('沈小回');
+if (process.platform === 'win32') app.setAppUserModelId('com.local.shen-xiao-hui');
 
 app.whenReady().then(() => {
   autostartEnabled = app.getLoginItemSettings().openAtLogin || true;

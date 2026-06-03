@@ -1,10 +1,14 @@
-﻿const sprite = document.getElementById('sprite');
+const sprite = document.getElementById('sprite');
 const spriteNext = document.getElementById('sprite-next');
 const eyeStack = document.getElementById('eye-stack');
 const irises = document.getElementById('irises');
 const highlights = document.getElementById('highlights');
 const eyelids = document.getElementById('eyelids');
 const pet = document.getElementById('pet');
+const sizePopover = document.getElementById('size-popover');
+const sizeSlider = document.getElementById('size-slider');
+const sizeReset = document.getElementById('size-reset');
+const sizeClose = document.getElementById('size-close');
 
 const assets = {
   idle: './assets/pet/base_idle.png',
@@ -113,9 +117,6 @@ let movedDuringDrag = false;
 let wasLongPress = false;
 let dragEndStartsGaze = true;
 let pointerDownPoint = null;
-let pendingDragMove = null;
-let dragMoveInFlight = false;
-let dragMoveFrame = 0;
 let liftedShakeScore = 0;
 let liftedShakeAxis = null;
 let lastDragPoint = null;
@@ -130,11 +131,34 @@ let gazeActiveUntil = 0;
 let gazeTimer = null;
 let currentPeekDirection = 'right';
 let gazeVector = { x: 0, y: 0 };
+let sizePopoverTimer = null;
 
 const SPRITE_FADE_MS = 180;
 const GAZE_ACTIVE_MS = 20000;
 const LIFTED_BEFUDDLED_MS = 3500;
 const LIFTED_SHAKE_TRIGGER_SCORE = 16;
+
+function setSizePopoverVisible(visible) {
+  if (!sizePopover) return;
+  sizePopover.hidden = !visible;
+  if (sizePopoverTimer) {
+    clearTimeout(sizePopoverTimer);
+    sizePopoverTimer = null;
+  }
+  if (visible) {
+    sizePopoverTimer = setTimeout(() => {
+      sizePopover.hidden = true;
+      sizePopoverTimer = null;
+    }, 4200);
+  }
+}
+
+function updateSizeControl(scale = 1) {
+  if (!sizeSlider || !sizeReset) return;
+  const percent = Math.round(scale * 100);
+  sizeSlider.value = String(percent);
+  sizeReset.textContent = `${percent}%`;
+}
 
 function applyPose(element, pose = 'idle') {
   const offset = poseOffsets[pose] || poseOffsets.idle;
@@ -285,39 +309,6 @@ function resetLiftedShake() {
   lastDragPoint = null;
 }
 
-function flushDragMove() {
-  dragMoveFrame = 0;
-  if (!pendingDragMove || dragMoveInFlight) return;
-
-  const point = pendingDragMove;
-  pendingDragMove = null;
-  dragMoveInFlight = true;
-  window.petApi.dragMove(point)
-    .catch((error) => console.error('dragMove failed', error))
-    .finally(() => {
-      dragMoveInFlight = false;
-      if (pendingDragMove && !dragMoveFrame) {
-        dragMoveFrame = requestAnimationFrame(flushDragMove);
-      }
-    });
-}
-
-function queueDragMove(point) {
-  pendingDragMove = point;
-  if (!dragMoveFrame && !dragMoveInFlight) {
-    dragMoveFrame = requestAnimationFrame(flushDragMove);
-  }
-}
-
-function resetDragMoveQueue() {
-  pendingDragMove = null;
-  dragMoveInFlight = false;
-  if (dragMoveFrame) {
-    cancelAnimationFrame(dragMoveFrame);
-    dragMoveFrame = 0;
-  }
-}
-
 function isInteractionLocked() {
   return currentState === 'click_annoyed';
 }
@@ -336,7 +327,6 @@ function resetPointerInteraction() {
   }
   stopLiftedBefuddledTimer();
   resetLiftedShake();
-  resetDragMoveQueue();
 }
 
 function setState(state, durationMs = 0, options = {}) {
@@ -596,6 +586,38 @@ function updateClingHitTest(event) {
   window.petApi.clingHitTest(isClingHeadPoint(event));
 }
 
+if (sizePopover) {
+  ['mousedown', 'mouseup', 'mousemove', 'click', 'dblclick', 'contextmenu'].forEach((eventName) => {
+    sizePopover.addEventListener(eventName, (event) => {
+      event.stopPropagation();
+      if (eventName === 'contextmenu') event.preventDefault();
+    });
+  });
+}
+
+if (sizeSlider) {
+  sizeSlider.addEventListener('input', () => {
+    const scale = Number(sizeSlider.value) / 100;
+    updateSizeControl(scale);
+    window.petApi.setSizeScale(scale);
+    setSizePopoverVisible(true);
+  });
+}
+
+if (sizeReset) {
+  sizeReset.addEventListener('click', () => {
+    updateSizeControl(1);
+    window.petApi.setSizeScale(1);
+    setSizePopoverVisible(true);
+  });
+}
+
+if (sizeClose) {
+  sizeClose.addEventListener('click', () => {
+    setSizePopoverVisible(false);
+  });
+}
+
 pet.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return;
   if (currentState === 'cling_top' && !isClingHeadPoint(event)) {
@@ -647,7 +669,7 @@ window.addEventListener('mousemove', (event) => {
   if (!dragStarted) return;
   movedDuringDrag = true;
   trackLiftedShake({ x: event.screenX, y: event.screenY });
-  queueDragMove({ x: event.screenX, y: event.screenY });
+  window.petApi.dragMove({ x: event.screenX, y: event.screenY });
 });
 
 window.addEventListener('mouseup', (event) => {
@@ -662,7 +684,6 @@ window.addEventListener('mouseup', (event) => {
     holdTimer = null;
   }
   pet.classList.remove('dragging');
-  resetDragMoveQueue();
   const droppedWhileLiftedBefuddled = currentState === 'lifted_befuddled';
   if (droppedWhileLiftedBefuddled) stopLiftedBefuddledTimer();
   if (dragStarted) {
@@ -704,12 +725,17 @@ pet.addEventListener('dblclick', () => {
 window.addEventListener('contextmenu', (event) => {
   event.preventDefault();
   if (isInteractionLocked()) return;
-  window.petApi.contextMenu();
+  updateSizeControl(Number(sizeSlider?.value || 100) / 100);
+  setSizePopoverVisible(true);
 });
 
 window.petApi.onState(({ state, durationMs, direction, startGaze }) => {
   setState(state, durationMs, { direction });
   if (startGaze) startGazeFollow();
+});
+
+window.petApi.onSize(({ scale }) => {
+  updateSizeControl(scale);
 });
 
 window.petApi.onMouseMotion((payload) => {

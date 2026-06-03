@@ -19,8 +19,9 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.local.desktop-pet",
-    "productName": "桌宠",
+    "appId": "com.local.shen-xiao-hui",
+    "productName": "沈小回",
+    "artifactName": "沈小回.exe",
     "electronDist": "node_modules/electron/dist",
     "files": [
       "src/**/*",
@@ -28,6 +29,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": "portable"
     }
   }

@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>桌宠</title>
+    <title>沈小回</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main id="pet" aria-label="桌宠">
+    <main id="pet" aria-label="沈小回">
       <div id="body">
         <img id="sprite" src="./assets/pet/base_idle.png" alt="" draggable="false" />
         <img id="sprite-next" src="./assets/pet/base_idle.png" alt="" draggable="false" />
@@ -21,6 +21,11 @@
       </div>
       <div id="shadow"></div>
     </main>
+    <section id="size-popover" hidden>
+      <button id="size-close" type="button" aria-label="关闭">x</button>
+      <input id="size-slider" type="range" min="70" max="140" value="100" aria-label="大小" />
+      <button id="size-reset" type="button" aria-label="默认大小">100%</button>
+    </section>
     <script src="./tauri-bridge.js"></script>
     <script src="./renderer.js"></script>
   </body>

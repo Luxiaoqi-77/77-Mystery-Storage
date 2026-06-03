@@ -3,9 +3,12 @@
   const eventListen = window.__TAURI__?.event?.listen;
 
   const invoke = (command, args = {}) => {
-    if (coreInvoke) return coreInvoke(command, args);
-    console.error('Tauri invoke API is not available:', command);
-    return Promise.reject(new Error('Tauri invoke API is not available'));
+    if (coreInvoke) {
+      // Fire-and-forget matching Electron's ipcRenderer.send — no Promise returned
+      coreInvoke(command, args).catch((error) => console.error('Tauri invoke error:', command, error));
+    } else {
+      console.error('Tauri invoke API is not available:', command);
+    }
   };
 
   const listen = (event, callback) => {

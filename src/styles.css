@@ -15,8 +15,8 @@ body {
 
 #pet {
   position: relative;
-  width: 246px;
-  height: 246px;
+  width: calc(100% - 14px);
+  height: calc(100% - 14px);
   cursor: grab;
 }
 
@@ -153,6 +153,57 @@ body {
 
 #pet.clinging #shadow {
   opacity: 0;
+}
+
+#size-popover {
+  position: fixed;
+  left: 50%;
+  bottom: 10px;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(118px, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  width: min(190px, calc(100% - 24px));
+  padding: 13px 9px 8px;
+  border: 1px solid rgba(176, 142, 214, 0.42);
+  border-radius: 8px;
+  background: rgba(226, 207, 245, 0.8);
+  box-shadow: 0 8px 22px rgba(92, 66, 122, 0.16);
+  backdrop-filter: blur(10px);
+  transform: translateX(-50%);
+}
+
+#size-popover[hidden] {
+  display: none;
+}
+
+#size-slider {
+  width: 100%;
+  accent-color: #b78ade;
+}
+
+#size-close {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.38);
+  color: #65437e;
+  font: 700 12px/18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: center;
+}
+
+#size-reset {
+  height: 24px;
+  border: 1px solid rgba(143, 99, 181, 0.26);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.52);
+  color: #604176;
+  font: 600 11px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 #pet.clinging #body {
